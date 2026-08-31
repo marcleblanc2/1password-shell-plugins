@@ -3,6 +3,7 @@ package npm
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/1Password/shell-plugins/sdk"
 	"github.com/1Password/shell-plugins/sdk/importer"
-	"github.com/1Password/shell-plugins/sdk/provision"
 	"github.com/1Password/shell-plugins/sdk/schema"
 	"github.com/1Password/shell-plugins/sdk/schema/credname"
 	"github.com/1Password/shell-plugins/sdk/schema/fieldname"
@@ -41,11 +41,7 @@ func AccessToken() schema.CredentialType {
 				Optional:            true,
 			},
 		},
-		DefaultProvisioner: provision.TempFile(
-			npmConfigFile,
-			provision.Filename(".npmrc"),
-			provision.AddArgs("--userconfig", "{{ .Path }}"),
-		),
+		DefaultProvisioner: npmProvisioner(),
 		Importer: importer.TryAll(
 			importer.TryAllEnvVars(fieldname.Token, "NPM_TOKEN", "NODE_AUTH_TOKEN"),
 			tryNPMRCFile("~/.npmrc"),
@@ -56,35 +52,89 @@ func AccessToken() schema.CredentialType {
 	}
 }
 
-func pnpmProvisioner() sdk.Provisioner {
-	return provision.TempFile(
-		npmConfigFile,
-		provision.Filename(".npmrc"),
-		provision.SetPathAsEnvVar("NPM_CONFIG_USERCONFIG"),
-	)
+func npmProvisioner() sdk.Provisioner {
+	return npmEnvProvisioner{}
 }
 
-func npmConfigFile(in sdk.ProvisionInput) ([]byte, error) {
+type npmEnvProvisioner struct{}
+
+func (npmEnvProvisioner) Provision(_ context.Context, in sdk.ProvisionInput, out *sdk.ProvisionOutput) {
 	registry, err := normalizeRegistry(in.ItemFields[fieldname.Host])
 	if err != nil {
-		return nil, err
+		out.AddError(err)
+		return
 	}
 
-	scope := strings.TrimPrefix(strings.TrimSpace(in.ItemFields[fieldname.Organization]), "@")
-	var contents strings.Builder
-	if scope != "" {
-		fmt.Fprintf(&contents, "@%s:registry=%s\n", scope, registry.String())
+	authEnvVar := fmt.Sprintf("npm_config_//%s/:_authToken", registryAuthKey(registry))
+	if strings.ContainsAny(authEnvVar, "=\x00") {
+		out.AddError(fmt.Errorf("registry URL cannot be represented as an npm environment variable"))
+		return
+	}
+	out.AddEnvVar(authEnvVar, in.ItemFields[fieldname.Token])
+
+	organization := strings.TrimPrefix(strings.TrimSpace(in.ItemFields[fieldname.Organization]), "@")
+	if organization != "" {
+		registryEnvVar := "npm_config_@" + organization + ":registry"
+		if strings.ContainsAny(registryEnvVar, "=\x00") {
+			out.AddError(fmt.Errorf("organization cannot be represented as an npm environment variable"))
+			return
+		}
+		out.AddEnvVar(registryEnvVar, registry.String())
 	} else if strings.TrimSpace(in.ItemFields[fieldname.Host]) != "" {
-		fmt.Fprintf(&contents, "registry=%s\n", registry.String())
+		out.AddEnvVar("npm_config_registry", registry.String())
+	}
+}
+
+func (npmEnvProvisioner) Deprovision(_ context.Context, _ sdk.DeprovisionInput, _ *sdk.DeprovisionOutput) {
+	// Nothing to do here: environment variables get wiped automatically when the process exits.
+}
+
+func (npmEnvProvisioner) Description() string {
+	return "Provision npm configuration environment variables"
+}
+
+func pnpmProvisioner() sdk.Provisioner {
+	return pnpmEnvProvisioner{}
+}
+
+type pnpmEnvProvisioner struct{}
+
+type pnpmAuthCredentials struct {
+	AuthToken string `json:"authToken"`
+}
+
+func (pnpmEnvProvisioner) Provision(_ context.Context, in sdk.ProvisionInput, out *sdk.ProvisionOutput) {
+	registry, err := normalizeRegistry(in.ItemFields[fieldname.Host])
+	if err != nil {
+		out.AddError(err)
+		return
 	}
 
-	registryPath := registry.EscapedPath()
-	if !strings.HasSuffix(registryPath, "/") {
-		registryPath += "/"
+	scope := "@"
+	if organization := strings.TrimPrefix(strings.TrimSpace(in.ItemFields[fieldname.Organization]), "@"); organization != "" {
+		scope = "@" + organization
 	}
-	fmt.Fprintf(&contents, "//%s%s:_authToken=%s\n", registry.Host, registryPath, in.ItemFields[fieldname.Token])
 
-	return []byte(contents.String()), nil
+	authConfig := map[string]map[string]pnpmAuthCredentials{
+		registry.String(): {
+			scope: {AuthToken: in.ItemFields[fieldname.Token]},
+		},
+	}
+	contents, err := json.Marshal(authConfig)
+	if err != nil {
+		out.AddError(fmt.Errorf("marshalling pnpm auth configuration: %w", err))
+		return
+	}
+
+	out.AddEnvVar("PNPM_CONFIG__AUTH", string(contents))
+}
+
+func (pnpmEnvProvisioner) Deprovision(_ context.Context, _ sdk.DeprovisionInput, _ *sdk.DeprovisionOutput) {
+	// Nothing to do here: environment variables get wiped automatically when the process exits.
+}
+
+func (pnpmEnvProvisioner) Description() string {
+	return "Provision PNPM_CONFIG__AUTH environment variable"
 }
 
 func normalizeRegistry(value string) (*url.URL, error) {
