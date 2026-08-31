@@ -15,10 +15,9 @@ func TestAccessTokenProvisioner(t *testing.T) {
 				fieldname.Token: "npm_example123",
 			},
 			ExpectedOutput: sdk.ProvisionOutput{
-				Files: map[string]sdk.OutputFile{
-					"/tmp/.npmrc": {Contents: []byte("//registry.npmjs.org/:_authToken=npm_example123\n")},
+				Environment: map[string]string{
+					"npm_config_//registry.npmjs.org/:_authToken": "npm_example123",
 				},
-				CommandLine: []string{"--userconfig", "/tmp/.npmrc"},
 			},
 		},
 		"custom default registry": {
@@ -27,10 +26,10 @@ func TestAccessTokenProvisioner(t *testing.T) {
 				fieldname.Host:  "registry.example.com/npm",
 			},
 			ExpectedOutput: sdk.ProvisionOutput{
-				Files: map[string]sdk.OutputFile{
-					"/tmp/.npmrc": {Contents: []byte("registry=https://registry.example.com/npm/\n//registry.example.com/npm/:_authToken=custom_example123\n")},
+				Environment: map[string]string{
+					"npm_config_//registry.example.com/npm/:_authToken": "custom_example123",
+					"npm_config_registry":                               "https://registry.example.com/npm/",
 				},
-				CommandLine: []string{"--userconfig", "/tmp/.npmrc"},
 			},
 		},
 		"scoped custom registry": {
@@ -40,10 +39,10 @@ func TestAccessTokenProvisioner(t *testing.T) {
 				fieldname.Organization: "@acme",
 			},
 			ExpectedOutput: sdk.ProvisionOutput{
-				Files: map[string]sdk.OutputFile{
-					"/tmp/.npmrc": {Contents: []byte("@acme:registry=https://registry.example.com/npm/\n//registry.example.com/npm/:_authToken=custom_example123\n")},
+				Environment: map[string]string{
+					"npm_config_//registry.example.com/npm/:_authToken": "custom_example123",
+					"npm_config_@acme:registry":                         "https://registry.example.com/npm/",
 				},
-				CommandLine: []string{"--userconfig", "/tmp/.npmrc"},
 			},
 		},
 	})
@@ -51,16 +50,36 @@ func TestAccessTokenProvisioner(t *testing.T) {
 
 func TestPNPMProvisioner(t *testing.T) {
 	plugintest.TestProvisioner(t, PNPMCLI().Uses[0].Provisioner, map[string]plugintest.ProvisionCase{
-		"uses an environment variable instead of an unsupported CLI option": {
+		"default registry": {
 			ItemFields: map[sdk.FieldName]string{
 				fieldname.Token: "npm_example123",
 			},
 			ExpectedOutput: sdk.ProvisionOutput{
 				Environment: map[string]string{
-					"NPM_CONFIG_USERCONFIG": "/tmp/.npmrc",
+					"PNPM_CONFIG__AUTH": `{"https://registry.npmjs.org/":{"@":{"authToken":"npm_example123"}}}`,
 				},
-				Files: map[string]sdk.OutputFile{
-					"/tmp/.npmrc": {Contents: []byte("//registry.npmjs.org/:_authToken=npm_example123\n")},
+			},
+		},
+		"custom default registry": {
+			ItemFields: map[sdk.FieldName]string{
+				fieldname.Token: "custom_example123",
+				fieldname.Host:  "registry.example.com/npm",
+			},
+			ExpectedOutput: sdk.ProvisionOutput{
+				Environment: map[string]string{
+					"PNPM_CONFIG__AUTH": `{"https://registry.example.com/npm/":{"@":{"authToken":"custom_example123"}}}`,
+				},
+			},
+		},
+		"scoped custom registry": {
+			ItemFields: map[sdk.FieldName]string{
+				fieldname.Token:        "custom_example123",
+				fieldname.Host:         "https://registry.example.com/npm/",
+				fieldname.Organization: "@acme",
+			},
+			ExpectedOutput: sdk.ProvisionOutput{
+				Environment: map[string]string{
+					"PNPM_CONFIG__AUTH": `{"https://registry.example.com/npm/":{"@acme":{"authToken":"custom_example123"}}}`,
 				},
 			},
 		},
